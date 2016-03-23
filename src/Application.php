@@ -1,15 +1,15 @@
 <?php
 
-namespace ShineUnited\SilexApps;
+namespace ShineUnited\Silex\Common;
 
-use Silex\Application as BaseApplication;
+use Silex\Application AS BaseApplication;
 use Silex\Application\MonologTrait;
 use Silex\Application\SwiftmailerTrait;
 use Silex\Application\TranslationTrait;
 use Silex\Application\TwigTrait;
 use Silex\Application\UrlGeneratorTrait;
+use Silex\Provider\DoctrineServiceProvider;
 use Silex\Provider\MonologServiceProvider;
-use Silex\Provider\SessionServiceProvider;
 use Silex\Provider\SwiftmailerServiceProvider;
 use Silex\Provider\TranslationServiceProvider;
 use Silex\Provider\TwigServiceProvider;
@@ -40,9 +40,63 @@ class Application extends BaseApplication {
 		$this->initializeSwiftmailerService();
 		$this->initializeTwigService();
 		$this->initializeUrlGeneratorService();
-		$this->initializeValidationService();
 		$this->initializeTranslationService();
-		$this->initializeSessionService();
+		$this->initializeValidationService();
+		$this->initializeDoctrineService();
+	}
+
+	private function initializeDoctrineService() {
+		$this->register(new DoctrineServiceProvider());
+
+		$this['db.options'] = $this->share(function() {
+			$options = [];
+
+			$map = [
+				'driver'   => 'RDS_DRIVER',
+				'dbname'   => 'RDS_DB_NAME',
+				'host'     => 'RDS_HOSTNAME',
+				'user'     => 'RDS_USERNAME',
+				'password' => 'RDS_PASSWORD',
+				'charset'  => 'RDS_CHARSET',
+				'path'     => 'RDS_PATH',
+				'port'     => 'RDS_PORT'
+			];
+
+			foreach($map as $optname => $envname) {
+				if(!isset($_ENV[$envname])) {
+					continue;
+				}
+
+				$options[$optname] = $_ENV[$envname];
+			}
+
+			if(count(array_keys($options)) > 0) {
+				return $options;
+			}
+
+			throw new \InvalidArgumentException('Identifier "db.options" is not defined.');
+		});
+
+		$this['db.schema'] = $this->share(function() {
+			return new Schema();
+		});
+
+		$this['db'] = $this->share($this->extend('db', function($db) {
+			$schemaManager = $db->getSchemaManager();
+			$currentSchema = $schemaManager->createSchema();
+
+			$queries = $currentSchema->getMigrateToSql($this['db.schema'], $db->getDatabasePlatform());
+			foreach($queries as $query) {
+				if(substr($query, 0, 4) == 'DROP') {
+					// skip drop table queries
+					continue;
+				}
+
+				$db->exec($query);
+			}
+
+			return $db;
+		}));
 	}
 
 	private function initializeMonologService() {
@@ -69,19 +123,17 @@ class Application extends BaseApplication {
 				return $_ENV['LOG_FILE'];
 			}
 
-			$logDir = $this['app.root'] . '/log';
-			if(!is_dir($logDir)) {
-				mkdir($logDir, 0777, true);
+			throw new \InvalidArgumentException('Identifier "monolog.logfile" is not defined.');
+		});
+
+		$this['monolog'] = $this->share($this->extend('monolog', function($monolog) {
+			$dirpath = dirname($this['monolog.logfile']);
+			if(!is_dir($dirpath)) {
+				mkdir($dirpath, 0777, true);
 			}
 
-			$logFile = $logDir . '/' . $this['now']->format('Ymd') . '.log';
-
-			return $logFile;
-		});
-	}
-
-	private function initializeSessionService() {
-		$this->register(new SessionServiceProvider());
+			return $monolog;
+		}));
 	}
 
 	private function initializeSwiftmailerService() {
@@ -92,10 +144,16 @@ class Application extends BaseApplication {
 			$options = [];
 			$options['transport'] = 'null';
 
-			$optnames = ['host', 'port', 'username', 'password', 'encryption', 'auth_mode'];
-			foreach($optnames as $optname) {
-				$envname = 'SMTP_' . strtoupper($optname);
+			$map = [
+				'host'       => 'SMTP_HOST',
+				'port'       => 'SMTP_PORT',
+				'username'   => 'SMTP_USERNAME',
+				'password'   => 'SMTP_PASSWORD',
+				'encryption' => 'SMTP_ENCRYPTION',
+				'auth_mode'  => 'SMTP_AUTH_MODE'
+			];
 
+			foreach($map as $optname => $envname) {
 				if(!isset($_ENV[$envname])) {
 					continue;
 				}
